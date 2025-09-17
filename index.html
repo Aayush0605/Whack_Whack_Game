@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Whack a Mole – Timed & Levels</title>
+  <style>
+    body { margin:0; font-family: system-ui, Arial, sans-serif; background:#f7f7fb; display:flex; min-height:100vh; align-items:center; justify-content:center; }
+    .wrap { width: 360px; max-width: 95vw; text-align: center; }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    .row { display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap; margin: 8px 0; }
+    .badge { background:#eee; border-radius:6px; padding:6px 10px; font-weight:600; }
+    select, input[type=range] { padding:6px; border-radius:6px; border:1px solid #ccc; }
+    .controls { display:flex; gap:8px; justify-content:center; margin:10px 0 12px; }
+    button { padding:8px 12px; border:none; border-radius:6px; background:#0077ff; color:#fff; cursor:pointer; font-weight:600; }
+    button:disabled { background:#9bbef5; cursor:not-allowed; }
+    .board { display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; background:#cde8a2; padding:10px; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }
+    .hole { position:relative; width:100px; height:100px; background:#6b4f2f; border-radius:50%; overflow:hidden; border:4px solid #4a321c; margin:0 auto; user-select:none; }
+    .mole { position:absolute; left:50%; transform:translateX(-50%); bottom:-110px; width:90px; height:90px; border-radius:50%; background:#8b5e3b; border:3px solid #5a3b22; transition: bottom 0.12s ease; cursor:pointer; }
+    .mole::before, .mole::after { content:""; position:absolute; background:#000; border-radius:50%; top:28px; width:8px; height:8px; }
+    .mole::before { left:28px; } .mole::after { right:28px; }
+    .up .mole { bottom:10px; }
+    @media (max-width:420px){ .hole{width:86px;height:86px;} .mole{width:76px;height:76px;} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Whack a Mole</h1>
+
+    <div class="row">
+      <div class="badge" id="score">Score: 0</div>
+      <div class="badge" id="time">Time: 30</div>
+      <div class="badge" id="speed">Speed: 800ms</div>
+    </div>
+
+    <div class="row">
+      <label>Round:
+        <select id="roundLen">
+          <option value="10">10s</option>
+          <option value="20">20s</option>
+          <option value="30" selected>30s</option>
+          <option value="60">60s</option>
+        </select>
+      </label>
+      <label>Difficulty:
+        <select id="difficulty">
+          <option value="easy" selected>Easy</option>
+          <option value="medium">Medium</option>
+          <option value="hard">Hard</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="row" style="gap:14px;">
+      <label style="display:flex; gap:6px; align-items:center;">
+        Mole up-time
+        <input id="uptime" type="range" min="300" max="1200" step="50" value="800" />
+      </label>
+    </div>
+
+    <div class="controls">
+      <button id="startBtn">Start</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <button id="resetBtn">Reset</button>
+    </div>
+
+    <div class="board" id="board">
+      <div class="hole"><div class="mole" aria-label="mole" role="button"></div></div>
+      <div class="hole"><div class="mole" aria-label="mole" role="button"></div></div>
+      <div class="hole"><div class="mole" aria-label="mole" role="button"></div></div>
+      <div class="hole"><div class="mole" aria-label="mole" role="button"></div></div>
+      <div class="hole"><div class="mole" aria-label="mole" role="button"></div></div>
+      <div class="hole"><div class="mole" aria-label="mole" role="button"></div></div>
+      <div class="hole"><div class="mole" aria-label="mole" role="button"></div></div>
+      <div class="hole"><div class="mole" aria-label="mole" role="button"></div></div>
+      <div class="hole"><div class="mole" aria-label="mole" role="button"></div></div>
+    </div>
+  </div>
+
+  <script>
+    // Elements
+    const holes = Array.from(document.querySelectorAll('.hole'));
+    const moles = Array.from(document.querySelectorAll('.mole'));
+    const scoreEl = document.getElementById('score');
+    const timeEl  = document.getElementById('time');
+    const speedEl = document.getElementById('speed');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn  = document.getElementById('stopBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const roundLenSel = document.getElementById('roundLen');
+    const diffSel = document.getElementById('difficulty');
+    const uptimeRange = document.getElementById('uptime');
+
+    // State
+    let score = 0;
+    let timeLeft = 30;
+    let gameOn = false;
+
+    let tickTimer = null;     // 1s countdown
+    let popTimer = null;      // pop loop interval
+    let upTimeout = null;     // per-pop hide timeout
+    let speedUpTimer = null;  // difficulty scaler
+
+    let popIntervalMs = 800;  // how often a new pop occurs
+    let moleVisibleMs = 800;  // how long mole stays up
+
+    // Helpers
+    const setScore = v => scoreEl.textContent = 'Score: ' + v;
+    const setTime  = v => timeEl.textContent  = 'Time: '  + v;
+    const setSpeed = () => speedEl.textContent = 'Speed: ' + popIntervalMs + 'ms';
+    const clearAllMoles = () => holes.forEach(h => h.classList.remove('up'));
+    const randomHole = () => holes[Math.floor(Math.random() * holes.length)];
+
+    function schedulePop() {
+      clearAllMoles();
+      const hole = randomHole();
+      hole.classList.add('up');
+
+      clearTimeout(upTimeout);
+      const visible = Math.max(200, moleVisibleMs + (Math.random()*200 - 100));
+      upTimeout = setTimeout(() => {
+        hole.classList.remove('up');
+      }, visible);
+    }
+
+    function applyDifficultyRamp() {
+      clearInterval(speedUpTimer);
+      const diff = diffSel.value;
+      if (diff === 'easy') return; // no ramp
+
+      const stepMs = diff === 'medium' ? 50 : 80; // bigger step on hard
+      speedUpTimer = setInterval(() => {
+        // speed up every 5s by reducing interval and visible time
+        popIntervalMs = Math.max(300, popIntervalMs - stepMs);
+        moleVisibleMs = Math.max(250, moleVisibleMs - stepMs);
+        setSpeed();
+        // restart pop loop to apply new speed
+        if (gameOn) {
+          clearInterval(popTimer);
+          popTimer = setInterval(schedulePop, popIntervalMs);
+        }
+      }, 5000);
+    }
+
+    function startGame() {
+      if (gameOn) return;
+      // initial from UI
+      timeLeft = parseInt(roundLenSel.value, 10);
+      popIntervalMs = parseInt(uptimeRange.value, 10);
+      moleVisibleMs = popIntervalMs; // start equal to slider
+      score = 0;
+      setScore(score);
+      setTime(timeLeft);
+      setSpeed();
+
+      gameOn = true;
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+
+      // timers
+      clearInterval(tickTimer);
+      tickTimer = setInterval(() => {
+        timeLeft--;
+        setTime(timeLeft);
+        if (timeLeft <= 0) endGame(true);
+      }, 1000);
+
+      clearInterval(popTimer);
+      popTimer = setInterval(schedulePop, popIntervalMs);
+      schedulePop();
+
+      applyDifficultyRamp();
+    }
+
+    function endGame(timeUp=false) {
+      if (!gameOn) return;
+      gameOn = false;
+
+      clearInterval(tickTimer);
+      clearInterval(popTimer);
+      clearTimeout(upTimeout);
+      clearInterval(speedUpTimer);
+      clearAllMoles();
+
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+
+      alert((timeUp ? 'Time up!' : 'Stopped!') + '\\nFinal Score: ' + score);
+    }
+
+    function resetGame() {
+      endGame(false);
+      score = 0;
+      setScore(score);
+      timeLeft = parseInt(roundLenSel.value, 10);
+      setTime(timeLeft);
+      moleVisibleMs = popIntervalMs = parseInt(uptimeRange.value, 10);
+      setSpeed();
+    }
+
+    // Click to score
+    moles.forEach(m => {
+      m.addEventListener('click', (e) => {
+        if (!gameOn) return;
+        const hole = e.currentTarget.parentElement;
+        if (hole.classList.contains('up')) {
+          score++;
+          setScore(score);
+          hole.classList.remove('up');
+        }
+      });
+      m.addEventListener('dragstart', e => e.preventDefault());
+    });
+
+    // UI bindings
+    startBtn.addEventListener('click', startGame);
+    stopBtn.addEventListener('click', () => endGame(false));
+    resetBtn.addEventListener('click', resetGame);
+
+    // Live update speed label from slider
+    uptimeRange.addEventListener('input', () => {
+      if (!gameOn) {
+        popIntervalMs = moleVisibleMs = parseInt(uptimeRange.value, 10);
+        setSpeed();
+      }
+    });
+  </script>
+</body>
+</html>
